@@ -110,6 +110,10 @@ button.danger{background:var(--danger);color:var(--bg);border-color:transparent}
 .ach .rw{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
 .ach .rw .dot{width:14px;height:14px;border-radius:50%;background:var(--sw);display:inline-block}
 .ach.got h4::after{content:" · logrado";font-family:var(--f-body);font-size:12px;color:var(--accent)}
+.keys{display:grid;grid-template-columns:auto 1fr;gap:10px 18px;margin:14px 0 0;align-items:center}
+.keys dt{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.keys dd{margin:0;color:var(--muted);font-size:13px}
+kbd{font:500 12px var(--f-mono);padding:3px 8px;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;background:var(--surface2);color:var(--fg)}
 @media (prefers-reduced-motion:reduce){.toast{animation:none}}
 </style>
 
@@ -124,6 +128,8 @@ button.danger{background:var(--danger);color:var(--bg);border-color:transparent}
   </form>
   <div class="tools">
     <button id="btnAch" type="button">Logros<span class="badge" id="achCount">0</span></button>
+    <button id="btnUndo" type="button" title="Deshacer (Ctrl+Z)">Deshacer</button>
+    <button id="btnKeys" type="button" title="Atajos de teclado (?)">Atajos</button>
     <button id="btnSnd" type="button" aria-pressed="true">Sonido: sí</button>
     <button id="btnFit" type="button">Centrar</button>
     <span class="status" id="saveState" role="status"></span>
@@ -255,7 +261,7 @@ function initRemote(){
   }).catch(function(){setStatus();});
 }
 function adopt(d){
-  state=normalize(d); reindex(); writeLocal(); lastSaved=state.updatedAt;
+  state=normalize(d); reindex(); undoS.length=0; redoS.length=0; writeLocal(); lastSaved=state.updatedAt;
   if(sel&&!map.get(sel)){sel=null;}
   if(state.view){view={x:state.view.x,y:state.view.y,k:state.view.k};}else{fit(true);}
   alpha=0; dirty=true; renderPanel(); updateAchCount(); updateSndBtn(); toast('Se recuperó tu mapa guardado en la cuenta.');
@@ -380,6 +386,7 @@ function updateClock(){
 /* ---------- operaciones sobre el mapa ---------- */
 function addNode(t,parentId){
   if(state.nodes.length>=MAXN){toast('El mapa llegó al límite de '+MAXN+' neuronas. Borra alguna para añadir más.');return null;}
+  pushUndo();
   var p=map.get(parentId)||map.get('root'),ang,dist;
   if(p.id==='root'){ang=Math.random()*Math.PI*2;dist=150;}
   else{ang=Math.atan2(p.y,p.x)+(Math.random()-.5)*1.6;dist=(p._d>=2?62:95);}
@@ -388,15 +395,15 @@ function addNode(t,parentId){
   checkAch();save();return n;
 }
 function delNode(id){
-  sfx('del');
+  sfx('del');pushUndo();
   var ids=[id].concat(descendants(id));
   state.nodes=state.nodes.filter(function(n){return ids.indexOf(n.id)<0;});
   state.links=state.links.filter(function(l){return ids.indexOf(l[0])<0&&ids.indexOf(l[1])<0;});
   reindex();sel=null;confirmDel=null;panel.hidden=true;alpha=Math.max(alpha,.5);settleSave=true;dirty=true;save();
-  toast(ids.length>1?'Se borraron '+ids.length+' neuronas.':'Neurona borrada.');
+  toast((ids.length>1?'Se borraron '+ids.length+' neuronas.':'Neurona borrada.')+' Puedes deshacerlo.');
 }
 function setDone(n){
-  n.done=!n.done;sfx(n.done?'done':'tick');
+  pushUndo();n.done=!n.done;sfx(n.done?'done':'tick');
   if(n.done&&!n.doneOnce){n.doneOnce=true;state.stats.tasksDone++;markDay();}
   dirty=true;checkAch();save();
 }
@@ -411,6 +418,7 @@ function handleConnect(t){
   var f=map.get(connectFrom); if(!f||t.id===f.id)return;
   if(t.parent===f.id||f.parent===t.id){toast('Ya están unidas por la rama.');return;}
   var i=linkIndex(f.id,t.id);
+  pushUndo();
   if(i>=0){state.links.splice(i,1);sfx('unlink');toast('Conexión quitada.');}
   else{state.links.push([f.id,t.id]);state.stats.links++;markDay();sfx('connect');toast('Conectadas: «'+short(f.t)+'» y «'+short(t.t)+'».');}
   alpha=Math.max(alpha,.6);settleSave=true;checkAch();save();endConnect();
@@ -450,7 +458,7 @@ function renderPanel(){
   panel.hidden=false;
   var top=panel.scrollTop,isRoot=n.id==='root',par=n.parent?map.get(n.parent):null,kids=children(n.id),dark=isDark();
   var h='<div class="ph"><div class="crumb">'+(isRoot?'Centro del mapa':'Rama de «'+esc(short(par?par.t:''))+'»')+'</div><button class="x" data-act="close" type="button" aria-label="Cerrar panel">×</button></div>';
-  h+='<label class="fld"><span>'+kindName(n)+'</span><input id="pTitle" type="text" maxlength="80" value="'+esc(n.t)+'"></label>';
+  h+='<label class="fld"><span>'+kindName(n)+'</span><input id="pTitle" type="text" maxlength="80" value="'+esc(n.t)+'" data-id="'+n.id+'"></label>';
   if(!isRoot){
     h+='<button class="chk'+(n.done?' on':'')+'" data-act="done" type="button" aria-pressed="'+n.done+'"><span class="box"></span>'+(n.done?'Hecha':'Marcar como hecha')+'</button>';
     h+='<section class="sec"><h3>Pomodoro<small>'+(n.poms||0)+' completado'+((n.poms||0)===1?'':'s')+'</small></h3>';
@@ -464,7 +472,7 @@ function renderPanel(){
   }
   h+='<section class="sec"><h3>'+kidsTitle(n)+'<small>'+kids.length+'</small></h3>';
   h+='<form id="childForm" class="row" autocomplete="off" style="flex-wrap:nowrap"><input id="childInput" type="text" maxlength="80" placeholder="'+kidPh(n)+'" aria-label="Nueva rama"><button type="submit">Añadir</button></form>';
-  h+='<p class="hint">'+(isRoot?'':'Las '+(n._d>=1?'subacciones':'acciones')+' nacen pequeñas y crecen cuando las seleccionas. ')+'Con la tecla Tab creas una rama nueva desde esta neurona.</p>';
+  h+='<p class="hint">'+(isRoot?'':'Las '+(n._d>=1?'subacciones':'acciones')+' nacen pequeñas y crecen cuando las seleccionas. ')+'Tab crea una rama nueva; el botón Atajos lista todas las teclas.</p>';
   if(kids.length){
     h+='<ul class="kids">'+kids.map(function(k){return '<li class="'+(k.done?'done':'')+'"><button class="go" type="button" data-act="select" data-id="'+k.id+'">'+esc(k.t)+'</button><button class="tick" type="button" data-act="kidDone" data-id="'+k.id+'" aria-label="'+(k.done?'Marcar pendiente':'Marcar hecha')+'" aria-pressed="'+k.done+'">'+(k.done?'✓':'○')+'</button></li>';}).join('')+'</ul>';
   }
@@ -486,7 +494,7 @@ function renderPanel(){
   if(!isRoot){
     var cnt=descendants(n.id).length+1;
     h+=confirmDel===n.id
-      ?'<div class="danger-box"><p>Se borrará'+(cnt>1?'n '+cnt+' neuronas':' esta neurona')+' con sus conexiones. No se puede deshacer.</p><div class="row"><button class="danger" type="button" data-act="delYes">Borrar</button><button type="button" data-act="delNo">Cancelar</button></div></div>'
+      ?'<div class="danger-box"><p>Se borrará'+(cnt>1?'n '+cnt+' neuronas':' esta neurona')+' con sus conexiones. Puedes recuperarlo con Deshacer.</p><div class="row"><button class="danger" type="button" data-act="delYes">Borrar</button><button type="button" data-act="delNo">Cancelar</button></div></div>'
       :'<button class="ghost-danger" type="button" data-act="del">Borrar '+(cnt>1?'esta rama':'esta neurona')+'</button>';
   }
   panel.innerHTML=h; panel.scrollTop=top; updateClock();
@@ -499,25 +507,33 @@ panel.addEventListener('click',function(e){
   if(!n)return;
   if(act==='done'){setDone(n);renderPanel();}
   else if(act==='kidDone'){var k=map.get(id);if(k){setDone(k);renderPanel();}}
-  else if(act==='pomToggle'){if(n.pom.endAt){pomPause(n);sfx('pause');dirty=true;save();}else pomStart(n);updateClock();}
+  else if(act==='pomToggle'){togglePom(n);}
   else if(act==='pomReset'){pomReset(n);updateClock();}
   else if(act==='pomSwap'){pomSwap(n);renderPanel();}
   else if(act==='setWork'||act==='setRest'){
     var key=act==='setWork'?'work':'rest',old=n.pom[key],full=n.pom.mode===key&&!n.pom.endAt&&Math.round(n.pom.left)===old*60;
     n.pom[key]=+v; if(full)n.pom.left=+v*60; dirty=true;save();renderPanel();
   }
-  else if(act==='color'){sfx('tick');n.color=v;dirty=true;save();renderPanel();}
-  else if(act==='shape'){sfx('tick');n.shape=v;dirty=true;save();renderPanel();}
+  else if(act==='color'){pushUndo();sfx('tick');n.color=v;dirty=true;save();renderPanel();}
+  else if(act==='shape'){pushUndo();sfx('tick');n.shape=v;dirty=true;save();renderPanel();}
   else if(act==='connect'){startConnect(n);}
-  else if(act==='unlink'){var i=linkIndex(n.id,id);if(i>=0){state.links.splice(i,1);sfx('unlink');alpha=Math.max(alpha,.4);settleSave=true;dirty=true;save();renderPanel();}}
+  else if(act==='unlink'){var i=linkIndex(n.id,id);if(i>=0){pushUndo();state.links.splice(i,1);sfx('unlink');alpha=Math.max(alpha,.4);settleSave=true;dirty=true;save();renderPanel();}}
   else if(act==='del'){confirmDel=n.id;clearTimeout(confirmTimer);confirmTimer=setTimeout(function(){confirmDel=null;if(sel===n.id)renderPanel();},6000);renderPanel();}
   else if(act==='delNo'){confirmDel=null;renderPanel();}
   else if(act==='delYes'){delNode(n.id);}
 });
+var titleUndoFor=null;
 panel.addEventListener('input',function(e){
-  if(e.target.id==='pTitle'){var n=map.get(sel);if(n){n.t=e.target.value;dirty=true;save();}}
+  if(e.target.id!=='pTitle')return;
+  var n=map.get(e.target.getAttribute('data-id'));
+  if(n){if(titleUndoFor!==n.id){pushUndo();titleUndoFor=n.id;}n.t=e.target.value;dirty=true;save();}
 });
-panel.addEventListener('keydown',function(e){if(e.target.id==='pTitle'&&e.key==='Enter'){e.preventDefault();e.target.blur();}});
+panel.addEventListener('focusout',function(e){
+  if(e.target.id!=='pTitle')return;
+  titleUndoFor=null;
+  var n=map.get(e.target.getAttribute('data-id'));
+  if(n&&!n.t.trim()){n.t=defName(n._d||0);dirty=true;save();}
+});
 panel.addEventListener('submit',function(e){
   e.preventDefault();
   if(e.target.id!=='childForm')return;
@@ -525,7 +541,7 @@ panel.addEventListener('submit',function(e){
   var c=addNode(t,sel); if(c){sfx('create');renderPanel();var i2=$('#childInput');if(i2)i2.focus();}
 });
 function select(id,quiet){
-  sel=id;confirmDel=null;dirty=true;
+  sel=id;confirmDel=null;titleUndoFor=null;dirty=true;
   if(!id){panel.hidden=true;return;}
   if(!quiet&&map.get(id))sfx('select',map.get(id)._d);
   renderPanel();var n=map.get(id);if(n)focusNode(n);
@@ -798,6 +814,7 @@ cv.addEventListener('pointermove',function(e){
   if(!drag.moved&&Math.hypot(dx,dy)>5)drag.moved=true;
   if(!drag.moved)return;
   if(drag.type==='node'){
+    if(!drag.pushed){pushUndo();drag.pushed=true;}
     var w=toWorld(e.offsetX,e.offsetY);drag.n.x=w.x+drag.ox;drag.n.y=w.y+drag.oy;drag.n.pinned=true;
     alpha=Math.max(alpha,.25);settleSave=true;dirty=true;
   }else{view.x=drag.vx+dx;view.y=drag.vy+dy;cv.style.cursor='grabbing';dirty=true;}
@@ -830,7 +847,9 @@ $('#addForm').addEventListener('submit',function(e){
   var n=addNode(t,'root');if(n){inp.value='';sfx('create');select(n.id,true);}
 });
 $('#btnFit').addEventListener('click',function(){fit(false);});
-$('#btnSnd').addEventListener('click',function(){state.settings.sound=!state.settings.sound;updateSndBtn();if(state.settings.sound)sfx('tick');save();});
+$('#btnSnd').addEventListener('click',toggleSound);
+$('#btnUndo').addEventListener('click',undo);
+$('#btnKeys').addEventListener('click',openKeys);
 $('#bannerCancel').addEventListener('click',endConnect);
 
 /* ---------- logros (diálogo) ---------- */
@@ -848,16 +867,126 @@ function closeAch(){dlg.hidden=true;}
 $('#btnAch').addEventListener('click',openAch);
 dlg.addEventListener('click',function(e){if(e.target===dlg||e.target.id==='dlgClose')closeAch();});
 function defName(d){return d<=1?'Nueva tarea':(d===2?'Nueva acción':'Nueva subacción');}
+function focusTitle(end){var el=$('#pTitle');if(el){el.focus();if(end)el.setSelectionRange(el.value.length,el.value.length);else el.select();}}
+function spawn(parentId){
+  var par=map.get(parentId);if(!par)return;
+  var cur=map.get(sel);if(cur&&!cur.t.trim())cur.t=defName(cur._d||0);
+  var c=addNode(defName((par._d||0)+1),par.id);
+  if(c){sfx('create');select(c.id,true);focusTitle();}
+}
+function sibParent(n){return n.id==='root'?'root':(n.parent||'root');}
+function inField(){var a=document.activeElement;return !!a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable);}
+function bodyish(){var a=document.activeElement;return !a||a===document.body||a===cv;}
+function togglePom(n){
+  if(!n||!n.pom)return;
+  if(n.pom.endAt){pomPause(n);sfx('pause');dirty=true;save();}else pomStart(n);
+  updateClock();
+}
+function toggleSound(){state.settings.sound=!state.settings.sound;updateSndBtn();if(state.settings.sound)sfx('tick');save();}
+function zoomBy(f){
+  var v=visibleRect(),cx=(v.x0+v.x1)/2,cy=(v.y0+v.y1)/2,k=Math.max(.3,Math.min(2.5,view.k*f)),wx=(cx-view.x)/view.k,wy=(cy-view.y)/view.k;
+  view.k=k;view.x=cx-wx*k;view.y=cy-wy*k;dirty=true;
+  clearTimeout(cv._vt);cv._vt=setTimeout(saveView,400);
+}
+function navigate(dx,dy){
+  var n=map.get(sel);
+  if(!n){select('root');return;}
+  var best=null,bs=1e9;
+  state.nodes.forEach(function(o){
+    if(o===n)return;
+    var vx=o.x-n.x,vy=o.y-n.y,d=Math.hypot(vx,vy)||1,dot=(vx*dx+vy*dy)/d;
+    if(dot<.5)return;
+    var sc=d*(2-dot);if(sc<bs){bs=sc;best=o;}
+  });
+  if(best)select(best.id);
+}
+
+/* deshacer y rehacer: guardan la estructura del mapa, no el tiempo de los relojes */
+var undoS=[],redoS=[];
+function snap(){return JSON.stringify({nodes:state.nodes,links:state.links},function(k,v){return k.charAt(0)==='_'?undefined:v;});}
+function pushUndo(){undoS.push(snap());if(undoS.length>60)undoS.shift();redoS.length=0;}
+function restore(str){
+  var d=JSON.parse(str);
+  d.nodes.forEach(function(o){var c=map.get(o.id);if(c){o.pom=c.pom;o.poms=c.poms;o.doneOnce=!!(c.doneOnce||o.doneOnce);}});
+  state.nodes=d.nodes;state.links=d.links;reindex();
+  if(sel&&!map.get(sel)){sel=null;panel.hidden=true;}
+  if(connectFrom&&!map.get(connectFrom))endConnect();
+  confirmDel=null;alpha=Math.max(alpha,.5);settleSave=true;dirty=true;save();
+  if(sel)renderPanel();
+}
+function undo(){
+  if(!undoS.length){toast('No hay nada que deshacer.');return;}
+  redoS.push(snap());restore(undoS.pop());sfx('tick');toast('Deshecho.');
+}
+function redo(){
+  if(!redoS.length){toast('No hay nada que rehacer.');return;}
+  undoS.push(snap());restore(redoS.pop());sfx('tick');toast('Rehecho.');
+}
+
+var KEYS=[
+  ['<kbd>Tab</kbd>','Rama nueva desde la neurona (hija)'],
+  ['<kbd>Enter</kbd>','Neurona hermana, al mismo nivel'],
+  ['<kbd>Shift</kbd> + <kbd>Tab</kbd>','Subir a la neurona madre'],
+  ['<kbd>←</kbd> <kbd>↑</kbd> <kbd>↓</kbd> <kbd>→</kbd>','Moverte entre neuronas'],
+  ['<kbd>Supr</kbd>','Borrar la neurona y su rama'],
+  ['<kbd>Ctrl</kbd> + <kbd>Z</kbd>','Deshacer'],
+  ['<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd>','Rehacer'],
+  ['<kbd>Espacio</kbd>','Iniciar o pausar el pomodoro'],
+  ['<kbd>Ctrl</kbd> + <kbd>Enter</kbd>','Marcar como hecha'],
+  ['<kbd>F2</kbd> o <kbd>E</kbd>','Renombrar'],
+  ['<kbd>C</kbd>','Conectar con otra neurona'],
+  ['<kbd>F</kbd>','Centrar la vista'],
+  ['<kbd>+</kbd> <kbd>-</kbd>','Acercar o alejar'],
+  ['<kbd>/</kbd>','Escribir una tarea nueva arriba'],
+  ['<kbd>M</kbd>','Sonido sí o no'],
+  ['<kbd>?</kbd>','Mostrar esta lista'],
+  ['<kbd>Esc</kbd>','Cerrar o quitar la selección']
+];
+function openKeys(){
+  var h='<div class="dh"><h2>Atajos</h2><button class="x" id="dlgClose" type="button" aria-label="Cerrar">×</button></div><p class="hint">Funcionan con una neurona seleccionada y sin estar escribiendo en un campo. Mientras editas un nombre, Tab, Enter, Shift+Tab y Ctrl+Enter también funcionan.</p><dl class="keys">';
+  KEYS.forEach(function(r){h+='<dt>'+r[0]+'</dt><dd>'+r[1]+'</dd>';});
+  $('#dlgCard').innerHTML=h+'</dl>';dlg.hidden=false;$('#dlgClose').focus();
+}
+
 document.addEventListener('keydown',function(e){
   if(e.key!=='Tab'||e.shiftKey||e.ctrlKey||e.metaKey||e.altKey)return;
   if(!sel||connectFrom||!dlg.hidden)return;
   var a=document.activeElement;
   if(a&&a!==document.body&&a!==cv&&a.id!=='pTitle')return;
-  var n=map.get(sel);if(!n)return;
-  e.preventDefault();
-  if(a&&a.id==='pTitle'&&!n.t.trim()){n.t=defName(n._d||0);}
-  var c=addNode(defName((n._d||0)+1),n.id);
-  if(c){sfx('create');select(c.id,true);var el=$('#pTitle');if(el){el.focus();el.select();}}
+  if(!map.get(sel))return;
+  e.preventDefault();spawn(sel);
+});
+document.addEventListener('keydown',function(e){
+  if(!state||!dlg.hidden||e.isComposing)return;
+  var k=e.key,mod=e.ctrlKey||e.metaKey,a=document.activeElement,inTitle=!!a&&a.id==='pTitle',field=inField(),bare=bodyish();
+  if(mod&&!field&&(k==='z'||k==='Z')){e.preventDefault();if(e.shiftKey)redo();else undo();return;}
+  if(mod&&!field&&(k==='y'||k==='Y')){e.preventDefault();redo();return;}
+  if(mod&&k==='Enter'&&sel&&sel!=='root'&&!connectFrom&&(bare||inTitle)){
+    e.preventDefault();var dn=map.get(sel);if(dn){setDone(dn);renderPanel();if(inTitle)focusTitle(true);}return;
+  }
+  if(mod||e.altKey||connectFrom)return;
+  if(k==='Enter'&&sel&&(bare||inTitle)){e.preventDefault();var cn=map.get(sel);if(cn)spawn(sibParent(cn));return;}
+  if(k==='Tab'&&e.shiftKey&&sel&&(bare||inTitle)){
+    e.preventDefault();var pn=map.get(sel);if(pn&&pn.parent){select(pn.parent);if(inTitle)focusTitle(true);}return;
+  }
+  if(!bare)return;
+  var n0=map.get(sel);
+  switch(k){
+    case 'Delete':case 'Backspace':if(n0&&n0.id!=='root'){e.preventDefault();delNode(n0.id);}break;
+    case 'ArrowLeft':e.preventDefault();navigate(-1,0);break;
+    case 'ArrowRight':e.preventDefault();navigate(1,0);break;
+    case 'ArrowUp':e.preventDefault();navigate(0,-1);break;
+    case 'ArrowDown':e.preventDefault();navigate(0,1);break;
+    case ' ':if(n0&&n0.pom){e.preventDefault();togglePom(n0);}break;
+    case 'F2':case 'e':case 'E':if(n0){e.preventDefault();focusTitle();}break;
+    case 'c':case 'C':if(n0){e.preventDefault();startConnect(n0);}break;
+    case 'f':case 'F':fit(false);break;
+    case '+':case '=':zoomBy(1.2);break;
+    case '-':case '_':zoomBy(1/1.2);break;
+    case '/':e.preventDefault();$('#newTask').focus();break;
+    case 'm':case 'M':toggleSound();break;
+    case '?':e.preventDefault();openKeys();break;
+  }
 });
 document.addEventListener('keydown',function(e){
   if(e.key!=='Escape')return;
