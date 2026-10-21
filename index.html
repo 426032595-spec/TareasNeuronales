@@ -925,7 +925,8 @@ function redo(){
 
 var KEYS=[
   ['<kbd>Tab</kbd>','Rama nueva desde la neurona (hija)'],
-  ['<kbd>Enter</kbd>','Neurona hermana, al mismo nivel'],
+  ['<kbd>Shift</kbd> + <kbd>Enter</kbd>','Neurona hermana, al mismo nivel'],
+  ['<kbd>Enter</kbd>','Terminar de editar el nombre'],
   ['<kbd>Shift</kbd> + <kbd>Tab</kbd>','Subir a la neurona madre'],
   ['<kbd>←</kbd> <kbd>↑</kbd> <kbd>↓</kbd> <kbd>→</kbd>','Moverte entre neuronas'],
   ['<kbd>Supr</kbd>','Borrar la neurona y su rama'],
@@ -943,7 +944,7 @@ var KEYS=[
   ['<kbd>Esc</kbd>','Cerrar o quitar la selección']
 ];
 function openKeys(){
-  var h='<div class="dh"><h2>Atajos</h2><button class="x" id="dlgClose" type="button" aria-label="Cerrar">×</button></div><p class="hint">Funcionan con una neurona seleccionada y sin estar escribiendo en un campo. Mientras editas un nombre, Tab, Enter, Shift+Tab y Ctrl+Enter también funcionan.</p><dl class="keys">';
+  var h='<div class="dh"><h2>Atajos</h2><button class="x" id="dlgClose" type="button" aria-label="Cerrar">×</button></div><p class="hint">Funcionan con una neurona seleccionada y sin estar escribiendo en un campo. Mientras editas un nombre, Tab, Shift+Enter, Shift+Tab y Ctrl+Enter también funcionan.</p><dl class="keys">';
   KEYS.forEach(function(r){h+='<dt>'+r[0]+'</dt><dd>'+r[1]+'</dd>';});
   $('#dlgCard').innerHTML=h+'</dl>';dlg.hidden=false;$('#dlgClose').focus();
 }
@@ -965,7 +966,8 @@ document.addEventListener('keydown',function(e){
     e.preventDefault();var dn=map.get(sel);if(dn){setDone(dn);renderPanel();if(inTitle)focusTitle(true);}return;
   }
   if(mod||e.altKey||connectFrom)return;
-  if(k==='Enter'&&sel&&(bare||inTitle)){e.preventDefault();var cn=map.get(sel);if(cn)spawn(sibParent(cn));return;}
+  if(k==='Enter'&&e.shiftKey&&sel&&(bare||inTitle)){e.preventDefault();var cn=map.get(sel);if(cn)spawn(sibParent(cn));return;}
+  if(k==='Enter'&&inTitle){e.preventDefault();a.blur();return;}
   if(k==='Tab'&&e.shiftKey&&sel&&(bare||inTitle)){
     e.preventDefault();var pn=map.get(sel);if(pn&&pn.parent){select(pn.parent);if(inTitle)focusTitle(true);}return;
   }
