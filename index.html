@@ -128,10 +128,6 @@ textarea{width:100%;min-height:64px;margin-top:12px;border:1px solid var(--line)
     <svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="6" cy="19" r="3.2"/><circle cx="14" cy="6" r="3.2"/><circle cx="21" cy="18" r="3.2"/><path d="M8 16.4 12 9M16.5 7.6 19.6 15M9.2 19.6h8.6" stroke-linecap="round"/></svg>
     <h1>Mapa neuronal</h1>
   </div>
-  <form id="addForm" class="add" autocomplete="off">
-    <input id="newTask" type="text" maxlength="80" placeholder="Nueva tarea…" aria-label="Nueva tarea">
-    <button class="primary" type="submit">Añadir</button>
-  </form>
   <div class="tools">
     <span class="coins" id="coins" title="Chispas: se ganan al crear, cerrar, enlazar, enfocarte y con logros"></span>
     <button id="btnAch" type="button">Logros<span class="badge" id="achCount">0</span></button>
@@ -1012,11 +1008,6 @@ cv.addEventListener('wheel',function(e){
   clearTimeout(cv._vt);cv._vt=setTimeout(saveView,400);
 },{passive:false});
 
-$('#addForm').addEventListener('submit',function(e){
-  e.preventDefault();
-  var inp=$('#newTask'),t=inp.value.trim();if(!t)return;
-  var cn0=map.get(sel),n=addNode(t,cn0&&cn0._c?cn0._c.id:'root');if(n){inp.value='';sfx('create');select(n.id,true);}
-});
 $('#btnFit').addEventListener('click',function(){fit(false);});
 $('#btnSnd').addEventListener('click',toggleSound);
 $('#btnUndo').addEventListener('click',undo);
@@ -1153,7 +1144,6 @@ var KEYS=[
   ['<kbd>C</kbd>','Conectar con otra neurona'],
   ['<kbd>F</kbd>','Centrar la vista'],
   ['<kbd>+</kbd> <kbd>-</kbd>','Acercar o alejar'],
-  ['<kbd>/</kbd>','Escribir una tarea nueva arriba'],
   ['<kbd>M</kbd>','Sonido sí o no'],
   ['<kbd>?</kbd>','Mostrar esta lista'],
   ['<kbd>Esc</kbd>','Cerrar o quitar la selección']
@@ -1200,7 +1190,6 @@ document.addEventListener('keydown',function(e){
     case 'f':case 'F':fit(false);break;
     case '+':case '=':zoomBy(1.2);break;
     case '-':case '_':zoomBy(1/1.2);break;
-    case '/':e.preventDefault();$('#newTask').focus();break;
     case 'm':case 'M':toggleSound();break;
     case '?':e.preventDefault();openKeys();break;
   }
