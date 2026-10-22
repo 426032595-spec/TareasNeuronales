@@ -114,6 +114,12 @@ button.danger{background:var(--danger);color:var(--bg);border-color:transparent}
 .keys dt{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .keys dd{margin:0;color:var(--muted);font-size:13px}
 kbd{font:500 12px var(--f-mono);padding:3px 8px;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;background:var(--surface2);color:var(--fg)}
+.coins{font:600 13px var(--f-mono);color:var(--accent);padding:6px 10px;border:1px solid var(--line);border-radius:8px;white-space:nowrap}
+.cat{margin:20px 0 0;font:700 11px var(--f-body);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.rw b{color:var(--accent);font-family:var(--f-mono);font-weight:600}
+textarea{width:100%;min-height:64px;margin-top:12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.05);color:var(--fg);padding:8px;font:12px var(--f-mono)}
+.snap{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line);font-size:12.5px}
+.snap small{color:var(--muted)}
 @media (prefers-reduced-motion:reduce){.toast{animation:none}}
 </style>
 
@@ -127,11 +133,14 @@ kbd{font:500 12px var(--f-mono);padding:3px 8px;border:1px solid var(--line);bor
     <button class="primary" type="submit">Añadir</button>
   </form>
   <div class="tools">
+    <span class="coins" id="coins" title="Chispas: se ganan al crear, cerrar, enlazar, enfocarte y con logros"></span>
     <button id="btnAch" type="button">Logros<span class="badge" id="achCount">0</span></button>
+    <button id="btnBk" type="button" title="Copias de seguridad y puntos de restauración">Respaldo</button>
     <button id="btnUndo" type="button" title="Deshacer (Ctrl+Z)">Deshacer</button>
     <button id="btnKeys" type="button" title="Atajos de teclado (?)">Atajos</button>
     <button id="btnSnd" type="button" aria-pressed="true">Sonido: sí</button>
     <button id="btnFit" type="button">Centrar</button>
+    <button id="btnAll" type="button" title="Ver también los centros por comprar">Ver todo</button>
     <span class="status" id="saveState" role="status"></span>
   </div>
 </header>
@@ -146,7 +155,7 @@ kbd{font:500 12px var(--f-mono);padding:3px 8px;border:1px solid var(--line);bor
 <script>
 (function(){
 'use strict';
-var KEY='mapa-neuronal-v1';
+var KEY='mapa-neuronal-v1',SK='mapa-neuronal-v1-snaps',recovered=false,bkRef=null,remoteSnaps=[],persisted=null,lastSnapAt=0,sepSave=false,selSlot=null,floaters=[];
 var $=function(s){return document.querySelector(s);};
 var reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
 var FONT="'Hanken Grotesk', system-ui, sans-serif";
@@ -161,12 +170,15 @@ var COLORS=[
   {id:'verde',n:'Verde musgo',d:'#7fd6a0',l:'#1f8a4c'},
   {id:'rosa',n:'Rosa',d:'#ff9cc4',l:'#c72b73'},
   {id:'coral',n:'Coral',d:'#ff9a85',l:'#d04a2c'},
-  {id:'lima',n:'Lima',d:'#cfe86a',l:'#6f8a0c'}
+  {id:'lima',n:'Lima',d:'#cfe86a',l:'#6f8a0c'},
+  {id:'turquesa',n:'Turquesa',d:'#4de0c0',l:'#0b9c82'},{id:'dorado',n:'Dorado',d:'#ffd84d',l:'#b38900'},
+  {id:'magenta',n:'Magenta',d:'#ff6ad5',l:'#b8179a'},{id:'hielo',n:'Hielo',d:'#cfe6ff',l:'#4f7fb3'}
 ];
 var FREE_COLORS=['azul','ambar'];
 var SHAPES=[
   {id:'circulo',n:'Círculo'},{id:'hexagono',n:'Hexágono'},{id:'rombo',n:'Rombo'},
-  {id:'triangulo',n:'Triángulo'},{id:'estrella',n:'Estrella'}
+  {id:'triangulo',n:'Triángulo'},{id:'estrella',n:'Estrella'},
+  {id:'pentagono',n:'Pentágono'},{id:'octagono',n:'Octágono'},{id:'cruz',n:'Cruz'}
 ];
 var FREE_SHAPES=['circulo'];
 
@@ -186,11 +198,13 @@ function seed(){
 function normalize(s){
   s.nodes=s.nodes||[];
   s.links=(s.links||[]).filter(function(l){return Array.isArray(l)&&l.length===2;});
-  s.stats=Object.assign({created:0,links:0,pomodoros:0,focusMin:0,tasksDone:0,days:[]},s.stats||{});
+  s.stats=Object.assign({created:0,links:0,pomodoros:0,focusMin:0,tasksDone:0,days:[],spent:0,earned:0,backups:0,bestDayPoms:0,dayPoms:{k:'',n:0}},s.stats||{});
   s.unlocked=s.unlocked||[]; s.updatedAt=s.updatedAt||0; s.settings=Object.assign({sound:true},s.settings||{});
+  if(typeof s.coins!=='number') s.coins=15+10*s.unlocked.length;
+  s.meta=Object.assign({lastExport:0,hint:0},s.meta||{});
   if(!s.nodes.some(function(n){return n.id==='root';})) s.nodes.unshift(mkRoot());
   s.nodes.forEach(function(n){
-    if(n.id!=='root'&&!n.pom) n.pom=newPom();
+    if(n.parent&&!n.pom) n.pom=newPom();
     n.color=n.color||'azul'; n.shape=n.shape||'circulo'; n.poms=n.poms||0;
     if(typeof n.x!=='number') n.x=0; if(typeof n.y!=='number') n.y=0;
   });
@@ -198,10 +212,26 @@ function normalize(s){
 }
 function reindex(){
   map=new Map(state.nodes.map(function(n){return [n.id,n];}));
-  state.nodes.forEach(function(n){var d=0,c=n,g=0;while(c&&c.parent&&g<50){c=map.get(c.parent);d++;g++;}n._d=d;});
-  state.nodes.forEach(function(n){if(!n._r)n._r=baseRad(n)*(n.id===sel&&n.id!=='root'?1.7:1);});
+  state.nodes.forEach(function(n){var d=0,c=n,g=0;while(c&&c.parent&&g<50){c=map.get(c.parent);d++;g++;}n._d=d;n._c=c||n;});
+  state.nodes.forEach(function(n){if(!n._r)n._r=baseRad(n)*(n.id===sel&&n.parent?1.7:1);});
 }
-function loadLocal(){try{var s=localStorage.getItem(KEY);if(s){var o=JSON.parse(s);if(o&&o.nodes&&o.nodes.length)return o;}}catch(e){}return null;}
+function loadLocal(){try{var s=localStorage.getItem(KEY);if(s){var o=JSON.parse(s);if(o&&o.nodes&&o.nodes.length)return o;}}catch(e){}
+  var sn=getSnaps();for(var i=0;i<sn.length;i++){try{if(hsh(sn[i].d)===sn[i].h){var q=JSON.parse(sn[i].d);if(q&&q.nodes&&q.nodes.length){recovered=true;return q;}}}catch(e){}}
+  return null;}
+/* ---------- centros y chispas ---------- */
+function isCenter(n){return !!n&&!n.parent;}
+var COSTS=[60,140,260,420,640,900,1250,1700];
+function slotPos(i){var a=-Math.PI/2+i*Math.PI/4;return {x:Math.cos(a)*780,y:Math.sin(a)*780};}
+function owned(){return state.nodes.filter(function(n){return typeof n.slot==='number';});}
+function nextCost(){var k=owned().length;return k<COSTS.length?COSTS[k]:null;}
+function slotFree(i){return !state.nodes.some(function(n){return n.slot===i;});}
+function updateCoins(){var el=$('#coins');if(el&&state)el.textContent='✦ '+state.coins;}
+function earn(a,n){
+  state.coins+=a;state.stats.earned+=a;updateCoins();
+  if(n&&!reduce){floaters.push({x:n.x,y:n.y-rad(n)-8,t:performance.now(),s:'+'+a+' ✦'});dirty=true;}
+  var c=nextCost();
+  if(!state.meta.hint&&c!==null&&state.coins>=c){state.meta.hint=1;toast('Ya tienes chispas para un centro nuevo. Pulsa «Ver todo» y toca un círculo apagado del mapa.');}
+}
 function ser(){return JSON.stringify(state,function(k,v){return k.charAt(0)==='_'?undefined:v;});}
 
 function children(id){return state.nodes.filter(function(n){return n.parent===id;});}
@@ -209,7 +239,7 @@ function childCount(id){return children(id).length;}
 function descendants(id){var out=[],st=[id];while(st.length){var c=st.pop();children(c).forEach(function(k){out.push(k.id);st.push(k.id);});}return out;}
 function baseRad(n){var d=n._d||0;return d===0?34:(d===1?24:(d===2?14:10));}
 function rad(n){return n._r||baseRad(n);}
-function fsz(n){return n.id==='root'?13:((n._d||0)>=2?11:12);}
+function fsz(n){return !n.parent?13:((n._d||0)>=2?11:12);}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function short(t){t=String(t||'');return t.length>28?t.slice(0,27)+'…':t;}
 function colorDef(id){return COLORS.find(function(c){return c.id===id;})||COLORS[0];}
@@ -220,6 +250,40 @@ function hex(h,a){var n=parseInt(h.slice(1),16);return 'rgba('+(n>>16)+','+(n>>8
 /* ---------- guardado ---------- */
 var saveTimer=null, remote=null, writing=false, pending=false, remoteErr=false, localOk=true, lastSaved=0;
 function writeLocal(){try{localStorage.setItem(KEY,ser());localOk=true;}catch(e){localOk=false;}}
+/* protección de datos: puntos de restauración con huella, en el dispositivo y en la cuenta */
+function hsh(s){var h=5381;for(var i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return (h>>>0).toString(36);}
+function getSnaps(){try{var a=JSON.parse(localStorage.getItem(SK)||'[]');return Array.isArray(a)?a:[];}catch(e){return [];}}
+function putSnaps(a){try{localStorage.setItem(SK,JSON.stringify(a));}catch(e){try{localStorage.setItem(SK,JSON.stringify(a.slice(0,3)));}catch(e2){}}}
+function snapshot(why,force){
+  if(!state)return;
+  var now=Date.now();
+  if(!force&&now-lastSnapAt<20*60000)return;
+  var a=getSnaps(),d=ser(),cnt=state.nodes.length,h=hsh(d);
+  if(!force&&((a[0]&&a[0].h===h)||(cnt<=2&&a.some(function(s){return s.n>2;}))))return;
+  lastSnapAt=now;
+  a.unshift({t:now,n:cnt,why:why||'automático',h:h,d:d});
+  var au=0,pr=0;a=a.filter(function(s){return s.why==='automático'?++au<=6:++pr<=5;});
+  putSnaps(a);pushRemoteBackup(a);
+}
+function pushRemoteBackup(a){
+  if(!bkRef)return;
+  var out=[],len=0;
+  for(var i=0;i<a.length&&out.length<4;i++){len+=a[i].d.length;if(len>200000)break;out.push(a[i]);}
+  Promise.resolve().then(function(){return bkRef.set({updatedAt:Date.now(),snaps:out});}).catch(function(){});
+}
+function restoreSnap(s){
+  if(!s||hsh(s.d)!==s.h){toast('Ese punto está dañado y no se puede restaurar.');return;}
+  var o;try{o=JSON.parse(s.d);}catch(e){toast('No se pudo leer ese punto.');return;}
+  if(!o||!Array.isArray(o.nodes)||!o.nodes.length){toast('Ese punto está vacío.');return;}
+  snapshot('antes de restaurar',true);o.updatedAt=Date.now();adopt(o,'Mapa restaurado. Tu versión anterior quedó guardada como punto de restauración.');save();closeAch();
+}
+function importText(t){
+  var o;try{o=JSON.parse(String(t).trim());}catch(e){toast('Ese texto no es una copia válida.');return;}
+  if(o&&o.mapa&&typeof o.d==='string'){if(hsh(o.d)!==o.h){toast('La copia está dañada o incompleta.');return;}try{o=JSON.parse(o.d);}catch(e){toast('La copia está dañada.');return;}}
+  if(!o||!Array.isArray(o.nodes)||!o.nodes.length){toast('No encontré un mapa dentro de ese texto.');return;}
+  snapshot('antes de importar',true);o.updatedAt=Date.now();adopt(o,'Copia restaurada. Tu versión anterior quedó guardada como punto de restauración.');save();closeAch();
+}
+function exportText(){var d=ser();return JSON.stringify({mapa:1,h:hsh(d),d:d,at:Date.now()});}
 function setStatus(txt){
   var el=$('#saveState');
   if(txt){el.textContent=txt;return;}
@@ -229,7 +293,7 @@ function setStatus(txt){
   el.textContent=t?base+' · '+t:base;
 }
 function save(){
-  state.updatedAt=Date.now(); lastSaved=state.updatedAt; writeLocal(); setStatus('Guardando…');
+  state.updatedAt=Date.now(); lastSaved=state.updatedAt; writeLocal(); snapshot(); setStatus('Guardando…');
   clearTimeout(saveTimer); saveTimer=setTimeout(flush,800);
 }
 function saveView(){state.view={x:view.x,y:view.y,k:view.k};writeLocal();}
@@ -252,24 +316,24 @@ function initRemote(){
         var ru=0;
         if(snap.exists){
           var d=snap.data();
-          if(d&&Array.isArray(d.nodes)){ru=d.updatedAt||0; if(ru>(state.updatedAt||0)) adopt(JSON.parse(JSON.stringify(d)));}
+          if(d&&Array.isArray(d.nodes)){ru=d.updatedAt||0; if(ru>(state.updatedAt||0)){if(state.updatedAt)snapshot('antes de recuperar de la cuenta',true);adopt(JSON.parse(JSON.stringify(d)),'Se recuperó tu mapa guardado en la cuenta.');}}
         }
-        remote=ref; setStatus();
+        remote=ref; bkRef=db.doc('data/users/'+id+'/mapa_bk'); setStatus();
         if((state.updatedAt||0)>ru) flush();
       });
     });
   }).catch(function(){setStatus();});
 }
-function adopt(d){
-  state=normalize(d); reindex(); undoS.length=0; redoS.length=0; writeLocal(); lastSaved=state.updatedAt;
+function adopt(d,msg){
+  state=normalize(d);selSlot=null; reindex(); undoS.length=0; redoS.length=0; writeLocal(); lastSaved=state.updatedAt;
   if(sel&&!map.get(sel)){sel=null;}
   if(state.view){view={x:state.view.x,y:state.view.y,k:state.view.k};}else{fit(true);}
-  alpha=0; dirty=true; renderPanel(); updateAchCount(); updateSndBtn(); toast('Se recuperó tu mapa guardado en la cuenta.');
+  alpha=0; dirty=true; renderPanel(); updateAchCount(); updateSndBtn(); updateCoins(); toast(msg||'Mapa recuperado.');
 }
 
 /* ---------- logros ---------- */
 function dayKey(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
-function markDay(){var k=dayKey(),ds=state.stats.days;if(ds.indexOf(k)<0){ds.push(k);if(ds.length>90)ds.shift();}}
+function markDay(){var k=dayKey(),ds=state.stats.days;if(ds.indexOf(k)<0){ds.push(k);if(ds.length>90)ds.shift();earn(3);}}
 function maxRun(days){
   var s=Array.from(new Set(days)).sort(),best=0,run=0,prev=null;
   s.forEach(function(d){
@@ -278,32 +342,63 @@ function maxRun(days){
   });
   return best;
 }
-var ACH=[
-  {id:'chispa',n:'Primera chispa',d:'Crea tu primera tarea o acción.',prog:function(){return [state.stats.created,1];},reward:{c:'cian'}},
-  {id:'sinapsis',n:'Primera sinapsis',d:'Conecta dos neuronas entre sí.',prog:function(){return [state.stats.links,1];},reward:{c:'violeta'}},
-  {id:'foco1',n:'Primer pomodoro',d:'Completa un ciclo de enfoque.',prog:function(){return [state.stats.pomodoros,1];},reward:{s:'hexagono'}},
-  {id:'cierre1',n:'Algo cerrado',d:'Marca una neurona como hecha.',prog:function(){return [state.stats.tasksDone,1];},reward:{c:'verde'}},
-  {id:'rama3',n:'Rama de tres',d:'Haz que una neurona tenga tres ramas.',prog:function(){return [Math.max.apply(null,[0].concat(state.nodes.map(function(n){return childCount(n.id);}))),3];},reward:{s:'rombo'}},
-  {id:'foco5',n:'Cinco pomodoros',d:'Completa cinco ciclos de enfoque.',prog:function(){return [state.stats.pomodoros,5];},reward:{c:'rosa'}},
-  {id:'red10',n:'Red de diez',d:'Ten diez neuronas en el mapa.',prog:function(){return [state.nodes.length-1,10];},reward:{s:'estrella'}},
-  {id:'dias2',n:'Dos días seguidos',d:'Usa el mapa en dos días consecutivos.',prog:function(){return [maxRun(state.stats.days),2];},reward:{c:'coral'}},
-  {id:'cierre5',n:'Cinco cierres',d:'Marca cinco neuronas como hechas.',prog:function(){return [state.stats.tasksDone,5];},reward:{s:'triangulo'}},
-  {id:'foco100',n:'Cien minutos de foco',d:'Acumula 100 minutos en pomodoros completos.',prog:function(){return [state.stats.focusMin,100];},reward:{c:'lima'}}
-];
+var ACH=[];
+function A(id,cat,n,d,fn,t,rw,coins){ACH.push({id:id,cat:cat,n:n,d:d,prog:function(){return [fn(),t];},reward:rw||{},coins:coins||0});}
+function ST(){return state.stats;}
+function mx(f){return Math.max.apply(null,[0].concat(state.nodes.map(f)));}
+function allKidsDone(){return state.nodes.some(function(n){var k=children(n.id);return k.length>=3&&k.every(function(x){return x.done;});})?1:0;}
+var C1='Creación',C2='Ramas y enlaces',C3='Enfoque',C4='Cierre',C5='Constancia',C6='Centros',C7='Economía',C8='Resguardo';
+A('chispa',C1,'Primera chispa','Crea tu primera tarea o acción.',function(){return ST().created;},1,{c:'cian'},5);
+A('red10',C1,'Red de diez','Ten diez neuronas en el mapa.',function(){return state.nodes.length-1;},10,{s:'estrella'},15);
+A('red25',C1,'Red de veinticinco','Ten 25 neuronas en el mapa.',function(){return state.nodes.length-1;},25,{c:'turquesa'},25);
+A('red50',C1,'Medio centenar','Ten 50 neuronas en el mapa.',function(){return state.nodes.length-1;},50,{s:'pentagono'},40);
+A('red100',C1,'Cerebro grande','Ten 100 neuronas en el mapa.',function(){return state.nodes.length-1;},100,{c:'dorado'},80);
+A('rama3',C2,'Rama de tres','Haz que una neurona tenga tres ramas.',function(){return mx(function(n){return childCount(n.id);});},3,{s:'rombo'},10);
+A('rama6',C2,'Rama de seis','Haz que una neurona tenga seis ramas.',function(){return mx(function(n){return childCount(n.id);});},6,{c:'magenta'},25);
+A('profundo',C2,'Pensamiento profundo','Crea una subacción dentro de una acción.',function(){return mx(function(n){return n._d||0;});},3,{},15);
+A('sinapsis',C2,'Primera sinapsis','Conecta dos neuronas entre sí.',function(){return ST().links;},1,{c:'violeta'},5);
+A('enlaces5',C2,'Tejedor','Crea cinco conexiones.',function(){return ST().links;},5,{},15);
+A('enlaces15',C2,'Telaraña','Crea quince conexiones.',function(){return ST().links;},15,{s:'octagono'},35);
+A('foco1',C3,'Primer pomodoro','Completa un ciclo de enfoque.',function(){return ST().pomodoros;},1,{s:'hexagono'},8);
+A('foco5',C3,'Cinco pomodoros','Completa cinco ciclos de enfoque.',function(){return ST().pomodoros;},5,{c:'rosa'},20);
+A('foco25',C3,'Veinticinco pomodoros','Completa 25 ciclos de enfoque.',function(){return ST().pomodoros;},25,{s:'cruz'},60);
+A('foco100',C3,'Cien minutos de foco','Acumula 100 minutos en pomodoros completos.',function(){return ST().focusMin;},100,{c:'lima'},20);
+A('foco500',C3,'Quinientos minutos','Acumula 500 minutos de enfoque.',function(){return ST().focusMin;},500,{c:'hielo'},60);
+A('intenso',C3,'Día intenso','Completa 4 pomodoros en un mismo día.',function(){return ST().bestDayPoms;},4,{},25);
+A('cierre1',C4,'Algo cerrado','Marca una neurona como hecha.',function(){return ST().tasksDone;},1,{c:'verde'},5);
+A('cierre5',C4,'Cinco cierres','Marca cinco neuronas como hechas.',function(){return ST().tasksDone;},5,{s:'triangulo'},15);
+A('cierre15',C4,'Quince cierres','Marca quince neuronas como hechas.',function(){return ST().tasksDone;},15,{},30);
+A('cierre50',C4,'Cincuenta cierres','Marca cincuenta neuronas como hechas.',function(){return ST().tasksDone;},50,{},80);
+A('ramaFull',C4,'Rama completa','Termina las tres o más ramas de una misma neurona.',allKidsDone,1,{},25);
+A('dias2',C5,'Dos días seguidos','Usa el mapa en dos días consecutivos.',function(){return maxRun(ST().days);},2,{c:'coral'},10);
+A('dias5',C5,'Cinco días seguidos','Usa el mapa cinco días consecutivos.',function(){return maxRun(ST().days);},5,{},25);
+A('dias7',C5,'Una semana','Usa el mapa siete días consecutivos.',function(){return maxRun(ST().days);},7,{},45);
+A('dias14',C5,'Dos semanas','Usa el mapa catorce días consecutivos.',function(){return maxRun(ST().days);},14,{},90);
+A('dias30',C5,'Un mes entero','Usa el mapa treinta días consecutivos.',function(){return maxRun(ST().days);},30,{},180);
+A('centro1',C6,'Segundo centro','Compra tu primer centro nuevo.',function(){return owned().length;},1,{},30);
+A('centro3',C6,'Constelación','Ten tres centros comprados.',function(){return owned().length;},3,{},80);
+A('centro8',C6,'Cielo completo','Compra los ocho centros.',function(){return owned().length;},8,{},250);
+A('ahorro100',C7,'Primer ahorro','Gana 100 chispas en total.',function(){return ST().earned;},100,{},20);
+A('ahorro500',C7,'Fortuna','Gana 500 chispas en total.',function(){return ST().earned;},500,{},60);
+A('gasto300',C7,'Inversor','Gasta 300 chispas en centros.',function(){return ST().spent;},300,{},40);
+A('resguardo',C8,'A salvo','Saca tu primera copia de seguridad propia.',function(){return ST().backups;},1,{},20);
 function achFor(kind,id){return ACH.find(function(a){return a.reward[kind]===id;});}
 function colorUnlocked(id){if(FREE_COLORS.indexOf(id)>=0)return true;var a=achFor('c',id);return !!a&&state.unlocked.indexOf(a.id)>=0;}
 function shapeUnlocked(id){if(FREE_SHAPES.indexOf(id)>=0)return true;var a=achFor('s',id);return !!a&&state.unlocked.indexOf(a.id)>=0;}
 function rewardName(a){
-  if(a.reward.c)return 'color '+colorDef(a.reward.c).n.toLowerCase();
-  var s=SHAPES.find(function(x){return x.id===a.reward.s;});return 'forma '+s.n.toLowerCase();
+  var t=[];
+  if(a.reward.c)t.push('Desbloqueaste el color '+colorDef(a.reward.c).n.toLowerCase());
+  if(a.reward.s)t.push('Desbloqueaste la forma '+SHAPES.find(function(x){return x.id===a.reward.s;}).n.toLowerCase());
+  if(a.coins)t.push('+'+a.coins+' ✦');
+  return t.join(' · ');
 }
-function checkAch(){
-  var got=false;
+function checkAch(quiet){
+  var got=0;
   ACH.forEach(function(a){
     if(state.unlocked.indexOf(a.id)>=0)return;
-    var p=a.prog(); if(p[0]>=p[1]){state.unlocked.push(a.id);got=true;toast('Logro: '+a.n+'. Desbloqueaste el '+rewardName(a)+'.');}
+    var p=a.prog(); if(p[0]>=p[1]){state.unlocked.push(a.id);got++;earn(a.coins);if(!quiet)toast('Logro: '+a.n+'. '+rewardName(a)+'.');}
   });
-  if(got){sfx('ach');updateAchCount();if(sel)renderPanel();}
+  if(got){if(quiet)toast('Se desbloquearon '+got+' logros que ya habías cumplido.');else sfx('ach');updateAchCount();if(sel)renderPanel();}
 }
 function updateAchCount(){$('#achCount').textContent=state.unlocked.length+'/'+ACH.length;}
 
@@ -336,6 +431,7 @@ function sfx(name,d){
     else if(name==='pomDone'){tone(880,t,1.1,'sine',.12);tone(1320,t,.8,'sine',.05);tone(660,t+.3,1.2,'sine',.1);tone(990,t+.3,.9,'sine',.04);}
     else if(name==='restDone'){tone(660,t,.6,'sine',.1);tone(880,t+.22,.9,'sine',.1);}
     else if(name==='ach'){t+=.4;[523,659,784,988,1319].forEach(function(f,k){tone(f,t+k*.09,.3,'triangle',.07);});tone(2637,t+.5,.6,'sine',.025);}
+    else if(name==='buy'){tone(392,t,.1,'triangle',.08);tone(659,t+.08,.1,'triangle',.08);tone(988,t+.16,.3,'sine',.08);}
     else if(name==='tick'){tone(940,t,.06,'sine',.05);}
   }catch(e){}
 }
@@ -357,6 +453,7 @@ function pomComplete(n,quiet){
   var p=n.pom;
   if(p.mode==='work'){
     n.poms=(n.poms||0)+1; state.stats.pomodoros++; state.stats.focusMin+=p.work; markDay();
+    var dk=dayKey(),dp=state.stats.dayPoms;if(dp.k!==dk){dp.k=dk;dp.n=0;}dp.n++;state.stats.bestDayPoms=Math.max(state.stats.bestDayPoms,dp.n);earn(6,n);
     p.mode='rest'; p.left=p.rest*60; p.endAt=quiet?null:Date.now()+p.left*1000;
     if(!quiet){toast('Pomodoro completado en «'+short(n.t)+'». Descanso de '+p.rest+' min.');sfx('pomDone');}
   }else{
@@ -387,14 +484,19 @@ function updateClock(){
 function addNode(t,parentId){
   if(state.nodes.length>=MAXN){toast('El mapa llegó al límite de '+MAXN+' neuronas. Borra alguna para añadir más.');return null;}
   pushUndo();
-  var p=map.get(parentId)||map.get('root'),ang,dist;
-  if(p.id==='root'){ang=Math.random()*Math.PI*2;dist=150;}
-  else{ang=Math.atan2(p.y,p.x)+(Math.random()-.5)*1.6;dist=(p._d>=2?62:95);}
-  var n=mkNode(t,p.id,p.x+Math.cos(ang)*dist,p.y+Math.sin(ang)*dist,p.id==='root'?'azul':p.color);
-  state.nodes.push(n);reindex();state.stats.created++;markDay();alpha=1;settleSave=true;dirty=true;
+  var p=map.get(parentId)||map.get('root'),c=p._c||p,top=!p.parent,dist=top?150:(p._d>=2?62:95),base=top?0:Math.atan2(p.y-c.y,p.x-c.x),span=top?Math.PI*2:2.2,ang=base,best=-1;
+  for(var q=0;q<18;q++){
+    var a2=top?q/18*Math.PI*2:base+(q/17-.5)*span,px=p.x+Math.cos(a2)*dist,py=p.y+Math.sin(a2)*dist,md=1e9;
+    state.nodes.forEach(function(o){md=Math.min(md,Math.hypot(o.x-px,o.y-py));});
+    md+=Math.random()*8;if(md>best){best=md;ang=a2;}
+  }
+  var n=mkNode(t,p.id,p.x+Math.cos(ang)*dist,p.y+Math.sin(ang)*dist,p.color||'azul');
+  state.nodes.push(n);reindex();state.stats.created++;markDay();earn(1,n);alpha=1;settleSave=true;dirty=true;
   checkAch();save();return n;
 }
 function delNode(id){
+  var dn=map.get(id);if(!dn||isCenter(dn))return;
+  if(descendants(id).length>=3)snapshot('antes de borrar una rama',true);
   sfx('del');pushUndo();
   var ids=[id].concat(descendants(id));
   state.nodes=state.nodes.filter(function(n){return ids.indexOf(n.id)<0;});
@@ -404,7 +506,7 @@ function delNode(id){
 }
 function setDone(n){
   pushUndo();n.done=!n.done;sfx(n.done?'done':'tick');
-  if(n.done&&!n.doneOnce){n.doneOnce=true;state.stats.tasksDone++;markDay();}
+  if(n.done&&!n.doneOnce){n.doneOnce=true;state.stats.tasksDone++;markDay();earn(4,n);}
   dirty=true;checkAch();save();
 }
 function linkIndex(a,b){return state.links.findIndex(function(l){return (l[0]===a&&l[1]===b)||(l[0]===b&&l[1]===a);});}
@@ -420,7 +522,7 @@ function handleConnect(t){
   var i=linkIndex(f.id,t.id);
   pushUndo();
   if(i>=0){state.links.splice(i,1);sfx('unlink');toast('Conexión quitada.');}
-  else{state.links.push([f.id,t.id]);state.stats.links++;markDay();sfx('connect');toast('Conectadas: «'+short(f.t)+'» y «'+short(t.t)+'».');}
+  else{state.links.push([f.id,t.id]);state.stats.links++;markDay();earn(2,t);sfx('connect');toast('Conectadas: «'+short(f.t)+'» y «'+short(t.t)+'».');}
   alpha=Math.max(alpha,.6);settleSave=true;checkAch();save();endConnect();
 }
 
@@ -431,6 +533,9 @@ function shapePts(id,r){
   else if(id==='rombo'){pts=[[0,-r*1.12],[r*.85,0],[0,r*1.12],[-r*.85,0]];}
   else if(id==='triangulo'){for(i=0;i<3;i++){var b=-Math.PI/2+i*2*Math.PI/3;pts.push([Math.cos(b)*r*1.12,Math.sin(b)*r*1.12+r*.12]);}}
   else if(id==='estrella'){for(i=0;i<10;i++){var c=-Math.PI/2+i*Math.PI/5,q=i%2?r*.52:r*1.18;pts.push([Math.cos(c)*q,Math.sin(c)*q]);}}
+  else if(id==='pentagono'){for(i=0;i<5;i++){var e5=-Math.PI/2+i*2*Math.PI/5;pts.push([Math.cos(e5)*r*1.08,Math.sin(e5)*r*1.08]);}}
+  else if(id==='octagono'){for(i=0;i<8;i++){var o8=Math.PI/8+i*Math.PI/4;pts.push([Math.cos(o8)*r*1.08,Math.sin(o8)*r*1.08]);}}
+  else if(id==='cruz'){var w=r*.42,L=r*1.1;pts=[[-w,-L],[w,-L],[w,-w],[L,-w],[L,w],[w,w],[w,L],[-w,L],[-w,w],[-L,w],[-L,-w],[-w,-w]];}
   return pts;
 }
 function pathShape(ctx,id,x,y,r){
@@ -452,11 +557,27 @@ var panel=$('#panel');
 function kindName(n){var d=n._d||0;return d===0?'Nombre':(d===1?'Tarea':(d===2?'Acción':'Subacción'));}
 function kidsTitle(n){var d=n._d||0;return d===0?'Tareas':(d===1?'Acciones':'Subacciones');}
 function kidPh(n){var d=n._d||0;return d===0?'Nueva tarea…':(d===1?'Nueva acción…':'Nueva subacción…');}
+function renderSlot(){
+  var c=nextCost(),ok=c!==null&&state.coins>=c;
+  panel.hidden=false;
+  panel.innerHTML='<div class="ph"><div class="crumb">Centro por descubrir</div><button class="x" data-act="close" type="button" aria-label="Cerrar panel">×</button></div><h3 style="font-family:var(--f-display);font-size:14px;font-weight:400;text-transform:none;letter-spacing:0;color:var(--fg)">Un centro nuevo del mapa</h3><p class="hint" style="margin-top:10px">Un centro es otro punto desde el que nacen tus tareas, con su propia órbita. Sirve para separar áreas de tu vida.</p><dl class="stats" style="margin-top:14px"><dt>Precio</dt><dd>'+(c===null?'—':c+' ✦')+'</dd><dt>Tus chispas</dt><dd>'+state.coins+' ✦</dd></dl>'+(c===null?'<p class="hint" style="margin-top:14px">Ya compraste todos los centros.</p>':'<button class="primary" style="margin-top:16px;width:100%" data-act="buy" type="button"'+(ok?'':' disabled')+'>'+(ok?'Comprar por '+c+' ✦':'Te faltan '+(c-state.coins)+' ✦')+'</button>')+'<p class="hint" style="margin-top:12px">Ganas chispas al crear neuronas, cerrarlas, enlazar, completar pomodoros, volver cada día y con los logros.</p>';
+}
+function buyCenter(){
+  if(selSlot===null||!slotFree(selSlot))return;
+  var c=nextCost();if(c===null||state.coins<c)return;
+  var i=selSlot,k=owned().length,pos=slotPos(i),cols=COLORS.filter(function(x){return colorUnlocked(x.id);});
+  state.coins-=c;state.stats.spent+=c;
+  var n={id:uid(),t:'Centro '+(k+2),parent:null,x:pos.x,y:pos.y,pinned:true,done:false,color:cols[(k+1)%cols.length].id,shape:'circulo',slot:i,poms:0};
+  state.nodes.push(n);reindex();selSlot=null;sel=n.id;markDay();dirty=true;updateCoins();save();sfx('buy');
+  toast('Centro nuevo: ya puedes hacer nacer tareas desde él.');checkAch();renderPanel();focusNode(n);
+}
+function selectSlot(i){sel=null;selSlot=i;confirmDel=null;dirty=true;renderPanel();var p=slotPos(i);focusNode({x:p.x,y:p.y});sfx('select',1);}
 function renderPanel(){
+  if(selSlot!==null&&!sel){renderSlot();return;}
   var n=map.get(sel);
   if(!n||connectFrom){if(!n)panel.hidden=true;return;}
   panel.hidden=false;
-  var top=panel.scrollTop,isRoot=n.id==='root',par=n.parent?map.get(n.parent):null,kids=children(n.id),dark=isDark();
+  var top=panel.scrollTop,isRoot=!n.parent,par=n.parent?map.get(n.parent):null,kids=children(n.id),dark=isDark();
   var h='<div class="ph"><div class="crumb">'+(isRoot?'Centro del mapa':'Rama de «'+esc(short(par?par.t:''))+'»')+'</div><button class="x" data-act="close" type="button" aria-label="Cerrar panel">×</button></div>';
   h+='<label class="fld"><span>'+kindName(n)+'</span><input id="pTitle" type="text" maxlength="80" value="'+esc(n.t)+'" data-id="'+n.id+'"></label>';
   if(!isRoot){
@@ -468,7 +589,7 @@ function renderPanel(){
     h+='<div class="chips">Descanso '+[5,10,15].map(function(v){return '<button type="button" class="'+(n.pom.rest===v?'on':'')+'" data-act="setRest" data-v="'+v+'">'+v+' min</button>';}).join('')+'</div></section>';
   }else{
     var s=state.stats;
-    h+='<section class="sec"><h3>Resumen</h3><dl class="stats"><dt>Neuronas</dt><dd>'+(state.nodes.length-1)+'</dd><dt>Pomodoros completados</dt><dd>'+s.pomodoros+'</dd><dt>Minutos de enfoque</dt><dd>'+s.focusMin+'</dd><dt>Neuronas hechas</dt><dd>'+s.tasksDone+'</dd><dt>Conexiones creadas</dt><dd>'+s.links+'</dd></dl><p class="hint">Las tareas nacen de este centro. Esta neurona no se puede borrar.</p></section>';
+    h+='<section class="sec"><h3>Resumen</h3><dl class="stats"><dt>Neuronas</dt><dd>'+(state.nodes.length-1)+'</dd><dt>Pomodoros completados</dt><dd>'+s.pomodoros+'</dd><dt>Minutos de enfoque</dt><dd>'+s.focusMin+'</dd><dt>Neuronas hechas</dt><dd>'+s.tasksDone+'</dd><dt>Conexiones creadas</dt><dd>'+s.links+'</dd><dt>Chispas ✦</dt><dd>'+state.coins+'</dd><dt>Centros</dt><dd>'+(owned().length+1)+'/9</dd></dl><p class="hint">Las tareas nacen de este centro. Esta neurona no se puede borrar.</p></section>';
   }
   h+='<section class="sec"><h3>'+kidsTitle(n)+'<small>'+kids.length+'</small></h3>';
   h+='<form id="childForm" class="row" autocomplete="off" style="flex-wrap:nowrap"><input id="childInput" type="text" maxlength="80" placeholder="'+kidPh(n)+'" aria-label="Nueva rama"><button type="submit">Añadir</button></form>';
@@ -504,6 +625,7 @@ panel.addEventListener('click',function(e){
   var n=map.get(sel),act=b.getAttribute('data-act'),v=b.getAttribute('data-v'),id=b.getAttribute('data-id');
   if(act==='close'){select(null);return;}
   if(act==='select'){select(id);return;}
+  if(act==='buy'){buyCenter();return;}
   if(!n)return;
   if(act==='done'){setDone(n);renderPanel();}
   else if(act==='kidDone'){var k=map.get(id);if(k){setDone(k);renderPanel();}}
@@ -541,7 +663,7 @@ panel.addEventListener('submit',function(e){
   var c=addNode(t,sel); if(c){sfx('create');renderPanel();var i2=$('#childInput');if(i2)i2.focus();}
 });
 function select(id,quiet){
-  sel=id;confirmDel=null;titleUndoFor=null;dirty=true;
+  sel=id;selSlot=null;confirmDel=null;titleUndoFor=null;dirty=true;
   if(!id){panel.hidden=true;return;}
   if(!quiet&&map.get(id))sfx('select',map.get(id)._d);
   renderPanel();var n=map.get(id);if(n)focusNode(n);
@@ -634,15 +756,36 @@ function draw(now){
       }
     });
   }
+  drawSlots(now);
   state.nodes.forEach(function(n){drawNode(n,now);});
+  drawFloaters(now);
   ctx.restore();
+}
+function drawSlots(now){
+  var c=nextCost(),ok=c!==null&&state.coins>=c,pu=ok&&!reduce?.5+.5*Math.sin(now/450):0;
+  for(var i=0;i<8;i++){
+    if(!slotFree(i))continue;
+    var p=slotPos(i),s=selSlot===i,rgb=ok?'#ffbf5e':'#8d97c4';
+    var g=ctx.createRadialGradient(p.x,p.y,6,p.x,p.y,90);g.addColorStop(0,hex(rgb,.14+.12*pu));g.addColorStop(1,hex(rgb,0));
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(p.x,p.y,90,0,6.2832);ctx.fill();
+    ctx.beginPath();ctx.arc(p.x,p.y,s?34:28,0,6.2832);ctx.setLineDash([4,5]);ctx.strokeStyle=hex(rgb,s?1:.75);ctx.lineWidth=s?2.2:1.6;ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle=hex(rgb,.95);ctx.font='600 12px '+FONT;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(c===null?'—':'✦ '+c,p.x,p.y);
+  }
+  ctx.textBaseline='alphabetic';
+}
+function drawFloaters(now){
+  var t=performance.now();
+  floaters=floaters.filter(function(f){
+    var a=(t-f.t)/1100;if(a>=1)return false;
+    ctx.globalAlpha=1-a;ctx.fillStyle=T.accent;ctx.font='700 13px '+MONO;ctx.textAlign='center';ctx.lineWidth=3;ctx.strokeStyle=T.bg;ctx.strokeText(f.s,f.x,f.y-a*34);ctx.fillText(f.s,f.x,f.y-a*34);ctx.globalAlpha=1;dirty=true;return true;
+  });
 }
 function drawNode(n,now){
   var r=rad(n),col=colOf(n),isSel=n.id===sel,run=!!(n.pom&&n.pom.endAt),src=connectFrom===n.id;
-  var hr=r*(n.id==='root'?4.2:2.9),hg=ctx.createRadialGradient(n.x,n.y,r*.5,n.x,n.y,hr);
+  var hr=r*(isCenter(n)?4.2:2.9),hg=ctx.createRadialGradient(n.x,n.y,r*.5,n.x,n.y,hr);
   hg.addColorStop(0,hex(col,n.done?.4:.24));hg.addColorStop(1,hex(col,0));
   ctx.fillStyle=hg;ctx.beginPath();ctx.arc(n.x,n.y,hr,0,6.2832);ctx.fill();
-  if(n.id==='root'){
+  if(isCenter(n)){
     var an=reduce?0:now/7000;
     [1.9,2.7].forEach(function(m,i){
       ctx.beginPath();ctx.arc(n.x,n.y,r*m,0,6.2832);ctx.setLineDash([3,6]);ctx.strokeStyle=hex(col,.28);ctx.lineWidth=1;ctx.stroke();ctx.setLineDash([]);
@@ -658,11 +801,11 @@ function drawNode(n,now){
   ctx.fillStyle=g;ctx.fill();ctx.shadowBlur=0;
   ctx.lineWidth=isSel?3:2;ctx.strokeStyle=src?T.accent:col;ctx.stroke();
   ctx.restore();
-  if(n.id==='root'){
+  if(isCenter(n)){
     ctx.beginPath();ctx.arc(n.x,n.y,r*.5,0,Math.PI*2);ctx.strokeStyle=hex(col,.8);ctx.lineWidth=1.6;ctx.stroke();
     ctx.beginPath();ctx.arc(n.x,n.y,r*.14,0,Math.PI*2);ctx.fillStyle=col;ctx.fill();
   }
-  if(!n.done&&n.id!=='root'){ctx.beginPath();ctx.arc(n.x,n.y,Math.max(2.2,r*.17),0,6.2832);ctx.fillStyle='rgba(255,255,255,.92)';ctx.fill();}
+  if(!n.done&&!isCenter(n)){ctx.beginPath();ctx.arc(n.x,n.y,Math.max(2.2,r*.17),0,6.2832);ctx.fillStyle='rgba(255,255,255,.92)';ctx.fill();}
   if(n.done){
     ctx.beginPath();ctx.moveTo(n.x-r*.38,n.y+r*.02);ctx.lineTo(n.x-r*.1,n.y+r*.3);ctx.lineTo(n.x+r*.42,n.y-r*.28);
     ctx.strokeStyle=T.bg;ctx.lineWidth=2.8;ctx.lineCap='round';ctx.lineJoin='round';ctx.stroke();
@@ -705,10 +848,10 @@ function step(){
     var a=N[i];
     for(j=i+1;j<n;j++){
       var b=N[j],dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy;
-      if(d2>250000)continue;
+      if(d2>400000)continue;
       if(d2<1){dx=Math.random()-.5;dy=Math.random()-.5;d2=1;}
-      var d=Math.sqrt(d2),f=3400/d2,minD=rad(a)+rad(b)+26;
-      if(d<minD)f+=(minD-d)*.05;
+      var d=Math.sqrt(d2),f=5600/d2,minD=rad(a)+rad(b)+44;
+      if(d<minD)f+=(minD-d)*.09;
       f*=alpha;var fx=dx/d*f,fy=dy/d*f;
       a._vx-=fx;a._vy-=fy;b._vx+=fx;b._vy+=fy;
     }
@@ -719,12 +862,12 @@ function step(){
   }
   N.forEach(function(nd){
     if(!nd.parent)return;var p=map.get(nd.parent);if(!p)return;
-    spring(p,nd,nd._d<=1?150:(nd._d===2?95:62),.03);
+    spring(p,nd,nd._d<=1?165:(nd._d===2?105:70),.03);
   });
   state.links.forEach(function(l){var a=map.get(l[0]),b=map.get(l[1]);if(a&&b)spring(a,b,230,.006);});
   N.forEach(function(nd){
     if(nd.pinned||nd.id==='root'){nd._vx=0;nd._vy=0;return;}
-    nd._vx-=nd.x*.0015*alpha;nd._vy-=nd.y*.0015*alpha;
+    var cc=nd._c||nd;nd._vx-=(nd.x-cc.x)*.0015*alpha;nd._vy-=(nd.y-cc.y)*.0015*alpha;
     nd._vx*=.78;nd._vy*=.78;
     nd._vx=Math.max(-30,Math.min(30,nd._vx));nd._vy=Math.max(-30,Math.min(30,nd._vy));
     nd.x+=nd._vx;nd.y+=nd._vy;
@@ -732,17 +875,39 @@ function step(){
   alpha*=.985;
   if(alpha<.02){alpha=0;if(settleSave){settleSave=false;save();}}
 }
+function boxOf(n){var r=rad(n),L=(n.t||'').length,w=Math.max(r*2,Math.min(120,L*6.6)),lh=(L>18?30:15)+(n.pom&&n.pom.endAt?14:0);return {l:n.x-w/2-5,r:n.x+w/2+5,t:n.y-r-5,b:n.y+r+lh+8};}
+/* separación firme: nunca deja que dos neuronas (o sus textos) se encimen, pero empuja suave para que se vea fluido */
+function separate(){
+  var N=state.nodes,n=N.length,moved=false,it,i,j;
+  for(it=0;it<2;it++)for(i=0;i<n;i++){
+    var a=N[i],A=boxOf(a);
+    for(j=i+1;j<n;j++){
+      var b=N[j];
+      if(Math.abs(a.x-b.x)>270||Math.abs(a.y-b.y)>220)continue;
+      var B=boxOf(b),ox=Math.min(A.r,B.r)-Math.max(A.l,B.l),oy=Math.min(A.b,B.b)-Math.max(A.t,B.t);
+      if(ox<=0||oy<=0)continue;
+      var fa=(a.pinned||isCenter(a))?0:1,fb=(b.pinned||isCenter(b))?0:1,tot=fa+fb;if(!tot)continue;
+      var s=Math.min(ox,oy)*.42,dir;
+      if(ox<oy){dir=a.x<b.x?-1:1;a.x+=dir*s*fa/tot;b.x-=dir*s*fb/tot;}
+      else{dir=(A.t+A.b)<(B.t+B.b)?-1:1;a.y+=dir*s*fa/tot;b.y-=dir*s*fb/tot;}
+      if(s>.05)moved=true;
+      A=boxOf(a);
+    }
+  }
+  return moved;
+}
 var lastDraw=0;
 function loop(now){
   requestAnimationFrame(loop);
   if(!state)return;
   var growing=false;
   state.nodes.forEach(function(n){
-    var tg=baseRad(n)*(n.id===sel&&n.id!=='root'?1.7:1),cur=n._r||baseRad(n);
+    var tg=baseRad(n)*(n.id===sel&&n.parent?1.7:1),cur=n._r||baseRad(n);
     if(Math.abs(tg-cur)>.05){n._r=reduce?tg:cur+(tg-cur)*.22;growing=true;}else n._r=tg;
   });
   if(growing){dirty=true;alpha=Math.max(alpha,.12);}
   if(alpha>0){step();dirty=true;}
+  if(separate()){dirty=true;sepSave=true;}else if(sepSave&&!drag){sepSave=false;save();}
   var anim=!reduce||connectFrom;
   if(dirty||(anim&&now-lastDraw>34)){dirty=false;lastDraw=now;draw(now);}
 }
@@ -769,9 +934,10 @@ function focusNode(n){
   if(sx>v.x0+m&&sx<v.x1-m&&sy>v.y0+m&&sy<v.y1-m)return;
   animateTo({x:(v.x0+v.x1)/2-n.x*view.k,y:(v.y0+v.y1)/2-n.y*view.k,k:view.k});
 }
-function fit(immediate){
+function fit(immediate,all){
   var v=visibleRect(),x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
   state.nodes.forEach(function(n){x0=Math.min(x0,n.x);x1=Math.max(x1,n.x);y0=Math.min(y0,n.y);y1=Math.max(y1,n.y);});
+  if(all)for(var q=0;q<8;q++)if(slotFree(q)){var sp=slotPos(q);x0=Math.min(x0,sp.x-70);x1=Math.max(x1,sp.x+70);y0=Math.min(y0,sp.y-70);y1=Math.max(y1,sp.y+70);}
   var bw=Math.max(200,x1-x0+160),bh=Math.max(200,y1-y0+160),vw=v.x1-v.x0,vh=v.y1-v.y0;
   var k=Math.max(.35,Math.min(1.2,Math.min(vw/bw,vh/bh)));
   var t={k:k,x:(v.x0+v.x1)/2-((x0+x1)/2)*k,y:(v.y0+v.y1)/2-((y0+y1)/2)*k};
@@ -793,6 +959,11 @@ function hit(wx,wy){
   }
   return null;
 }
+function hitSlot(wx,wy){
+  var r=Math.max(40,22/view.k);
+  for(var i=0;i<8;i++){if(!slotFree(i))continue;var p=slotPos(i);if((p.x-wx)*(p.x-wx)+(p.y-wy)*(p.y-wy)<=r*r)return i;}
+  return -1;
+}
 function pinchInfo(){var a=Array.from(pts.values());return {cx:(a[0].x+a[1].x)/2,cy:(a[0].y+a[1].y)/2,d:Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y)||1};}
 cv.addEventListener('pointerdown',function(e){
   try{cv.setPointerCapture(e.pointerId);}catch(err){}
@@ -801,7 +972,7 @@ cv.addEventListener('pointerdown',function(e){
   if(pts.size>2)return;
   var w=toWorld(e.offsetX,e.offsetY),n=hit(w.x,w.y);
   if(n)drag={type:'node',n:n,sx:e.offsetX,sy:e.offsetY,moved:false,ox:n.x-w.x,oy:n.y-w.y};
-  else drag={type:'pan',sx:e.offsetX,sy:e.offsetY,vx:view.x,vy:view.y,moved:false};
+  else drag={type:'pan',slot:hitSlot(w.x,w.y),sx:e.offsetX,sy:e.offsetY,vx:view.x,vy:view.y,moved:false};
 });
 cv.addEventListener('pointermove',function(e){
   if(pts.has(e.pointerId))pts.set(e.pointerId,{x:e.offsetX,y:e.offsetY});
@@ -809,7 +980,7 @@ cv.addEventListener('pointermove',function(e){
     var p=pinchInfo(),k=Math.max(.3,Math.min(2.5,pinch.k*p.d/pinch.d));
     view.k=k;view.x=p.cx-pinch.wx*k;view.y=p.cy-pinch.wy*k;dirty=true;return;
   }
-  if(!drag){var w0=toWorld(e.offsetX,e.offsetY);cv.style.cursor=hit(w0.x,w0.y)?'pointer':'grab';return;}
+  if(!drag){var w0=toWorld(e.offsetX,e.offsetY);cv.style.cursor=(hit(w0.x,w0.y)||hitSlot(w0.x,w0.y)>=0)?'pointer':'grab';return;}
   var dx=e.offsetX-drag.sx,dy=e.offsetY-drag.sy;
   if(!drag.moved&&Math.hypot(dx,dy)>5)drag.moved=true;
   if(!drag.moved)return;
@@ -828,7 +999,7 @@ function endPointer(e){
     if(!d.moved){if(connectFrom)handleConnect(d.n);else select(d.n.id);}
     else save();
   }else{
-    if(!d.moved){if(!connectFrom)select(null);}else saveView();
+    if(!d.moved){if(!connectFrom){if(d.slot>=0)selectSlot(d.slot);else select(null);}}else saveView();
     cv.style.cursor='grab';
   }
 }
@@ -844,7 +1015,7 @@ cv.addEventListener('wheel',function(e){
 $('#addForm').addEventListener('submit',function(e){
   e.preventDefault();
   var inp=$('#newTask'),t=inp.value.trim();if(!t)return;
-  var n=addNode(t,'root');if(n){inp.value='';sfx('create');select(n.id,true);}
+  var cn0=map.get(sel),n=addNode(t,cn0&&cn0._c?cn0._c.id:'root');if(n){inp.value='';sfx('create');select(n.id,true);}
 });
 $('#btnFit').addEventListener('click',function(){fit(false);});
 $('#btnSnd').addEventListener('click',toggleSound);
@@ -855,17 +1026,59 @@ $('#bannerCancel').addEventListener('click',endConnect);
 /* ---------- logros (diálogo) ---------- */
 var dlg=$('#dlg');
 function openAch(){
-  var dark=isDark(),h='<div class="dh"><h2>Logros</h2><button class="x" id="dlgClose" type="button" aria-label="Cerrar">×</button></div><p class="hint">'+state.unlocked.length+' de '+ACH.length+'. Cada logro desbloquea un color o una forma para tus neuronas. Lo desbloqueado se conserva aunque borres neuronas.</p>';
+  var dark=isDark(),last='',h='<div class="dh"><h2>Logros</h2><button class="x" id="dlgClose" type="button" aria-label="Cerrar">×</button></div><p class="hint">'+state.unlocked.length+' de '+ACH.length+'. Cada logro da chispas ✦ y algunos desbloquean un color o una forma. Lo logrado se conserva aunque borres neuronas.</p>';
   ACH.forEach(function(a){
-    var p=a.prog(),got=state.unlocked.indexOf(a.id)>=0,cur=Math.min(p[0],p[1]),pct=Math.round(cur/p[1]*100);
-    var rw=a.reward.c?'<span class="dot" style="--sw:'+(dark?colorDef(a.reward.c).d:colorDef(a.reward.c).l)+'"></span>'+colorDef(a.reward.c).n:'<span style="color:var(--fg)">'+shapeSvg(a.reward.s).replace('width="26" height="26"','width="16" height="16"')+'</span>'+SHAPES.find(function(s){return s.id===a.reward.s;}).n;
+    if(a.cat!==last){last=a.cat;h+='<h3 class="cat">'+a.cat+'</h3>';}
+    var p=a.prog(),got=state.unlocked.indexOf(a.id)>=0,cur=Math.min(p[0],p[1]),pct=Math.round(cur/p[1]*100),rw='';
+    if(a.reward.c)rw='<span class="dot" style="--sw:'+(dark?colorDef(a.reward.c).d:colorDef(a.reward.c).l)+'"></span>'+colorDef(a.reward.c).n;
+    else if(a.reward.s)rw='<span style="color:var(--fg)">'+shapeSvg(a.reward.s).replace('width="26" height="26"','width="16" height="16"')+'</span>'+SHAPES.find(function(s){return s.id===a.reward.s;}).n;
+    if(a.coins)rw+=(rw?' · ':'')+'<b>+'+a.coins+' ✦</b>';
     h+='<div class="ach'+(got?' got':'')+'"><div><h4>'+esc(a.n)+'</h4><p>'+esc(a.d)+'</p></div><div class="rw">'+rw+'</div><div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="'+p[1]+'" aria-valuenow="'+cur+'"><i style="width:'+pct+'%"></i></div></div>';
   });
   $('#dlgCard').innerHTML=h;dlg.hidden=false;$('#dlgClose').focus();
 }
+/* ---------- respaldo (diálogo) ---------- */
+function fdate(t){return new Date(t).toLocaleString('es-MX',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});}
+function snapRows(a,kind){return a.map(function(s,i){return '<div class="snap"><span>'+fdate(s.t)+' · '+s.n+' neuronas<br><small>'+esc(s.why)+'</small></span><button class="small" type="button" data-bk="'+kind+'" data-i="'+i+'">Restaurar</button></div>';}).join('')||'<p class="hint">Aún no hay puntos.</p>';}
+function openBk(){
+  var le=state.meta.lastExport,dd=le?Math.floor((Date.now()-le)/864e5):-1,sn=getSnaps();
+  var h='<div class="dh"><h2>Respaldo</h2><button class="x" id="dlgClose" type="button" aria-label="Cerrar">×</button></div><p class="hint">Tu mapa se guarda en este dispositivo, en tu cuenta cuando está disponible y en puntos de restauración automáticos con verificación de integridad. Además puedes sacar tu propia copia.</p>';
+  h+='<dl class="stats" style="margin-top:12px"><dt>Última copia propia</dt><dd>'+(dd<0?'nunca':(dd===0?'hoy':'hace '+dd+' d'))+'</dd><dt>Cuenta</dt><dd>'+((remote&&!remoteErr)?'sincronizada':'no disponible')+'</dd><dt>Almacén protegido</dt><dd>'+(persisted===true?'sí':(persisted===false?'no':'¿?'))+'</dd></dl>';
+  h+='<div class="row" style="margin-top:14px"><button class="primary" type="button" data-bk="dl">Descargar copia</button><button type="button" data-bk="cp">Copiar copia</button><button type="button" data-bk="pt">Guardar punto ahora</button></div>';
+  h+='<textarea id="bkTxt" placeholder="Aquí aparece tu copia, o pega una para restaurarla…" aria-label="Copia de respaldo"></textarea><div class="row" style="margin-top:8px"><button type="button" data-bk="imp">Restaurar desde texto</button><button type="button" data-bk="file">Restaurar desde archivo</button><input type="file" id="bkFile" accept=".json,.txt,application/json" hidden></div>';
+  h+='<h3 class="cat">Puntos en este dispositivo</h3>'+snapRows(sn,'rs')+'<div id="bkRemote"></div>';
+  $('#dlgCard').innerHTML=h;dlg.hidden=false;$('#dlgClose').focus();
+  if(bkRef)Promise.resolve().then(function(){return bkRef.get();}).then(function(r){
+    var d=r&&r.exists?r.data():null,el=$('#bkRemote');
+    if(d&&Array.isArray(d.snaps)&&el&&!dlg.hidden){remoteSnaps=d.snaps;el.innerHTML='<h3 class="cat">Puntos en tu cuenta</h3>'+snapRows(remoteSnaps,'rr');}
+  }).catch(function(){});
+}
+function saveFile(txt,ta){
+  var u=window.claude&&window.claude.use?window.claude.use('downloads'):Promise.resolve(null);
+  Promise.resolve(u).then(function(dl){if(!dl)throw {code:'unavailable'};return dl.save({filename:'mapa-neuronal-'+dayKey()+'.json',data:txt});}).then(function(){toast('Copia guardada en tu dispositivo.');},function(er){if(er&&er.code==='declined')return;if(ta)ta.select();toast('Aquí no se pudo descargar. Usa «Copiar copia» y guarda el texto.');});
+}
+function bkClick(e){
+  var b=e.target.closest('[data-bk]');if(!b)return;
+  var a=b.getAttribute('data-bk'),i=+b.getAttribute('data-i'),ta=$('#bkTxt');
+  if(a==='dl'||a==='cp'){
+    var txt=exportText();if(ta)ta.value=txt;
+    state.stats.backups++;state.meta.lastExport=Date.now();save();checkAch();
+    if(a==='dl')saveFile(txt,ta);
+    else{try{navigator.clipboard.writeText(txt).then(function(){toast('Copia en el portapapeles. Guárdala en un lugar seguro.');},function(){if(ta)ta.select();toast('Copia el texto del cuadro a mano.');});}catch(er){if(ta)ta.select();toast('Copia el texto del cuadro a mano.');}}
+  }
+  else if(a==='pt'){snapshot('manual',true);toast('Punto de restauración guardado.');openBk();}
+  else if(a==='imp'){if(ta&&ta.value.trim())importText(ta.value);else toast('Pega primero una copia en el cuadro.');}
+  else if(a==='file'){$('#bkFile').click();}
+  else if(a==='rs')restoreSnap(getSnaps()[i]);
+  else if(a==='rr')restoreSnap(remoteSnaps[i]);
+}
 function closeAch(){dlg.hidden=true;}
 $('#btnAch').addEventListener('click',openAch);
 dlg.addEventListener('click',function(e){if(e.target===dlg||e.target.id==='dlgClose')closeAch();});
+dlg.addEventListener('click',bkClick);
+dlg.addEventListener('change',function(e){if(e.target.id==='bkFile'&&e.target.files[0]){var r=new FileReader();r.onload=function(){importText(r.result);};r.readAsText(e.target.files[0]);}});
+$('#btnBk').addEventListener('click',openBk);
+$('#btnAll').addEventListener('click',function(){fit(false,true);});
 function defName(d){return d<=1?'Nueva tarea':(d===2?'Nueva acción':'Nueva subacción');}
 function focusTitle(end){var el=$('#pTitle');if(el){el.focus();if(end)el.setSelectionRange(el.value.length,el.value.length);else el.select();}}
 function spawn(parentId){
@@ -874,7 +1087,7 @@ function spawn(parentId){
   var c=addNode(defName((par._d||0)+1),par.id);
   if(c){sfx('create');select(c.id,true);focusTitle();}
 }
-function sibParent(n){return n.id==='root'?'root':(n.parent||'root');}
+function sibParent(n){return n.parent||n.id;}
 function inField(){var a=document.activeElement;return !!a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable);}
 function bodyish(){var a=document.activeElement;return !a||a===document.body||a===cv;}
 function togglePom(n){
@@ -908,6 +1121,8 @@ function pushUndo(){undoS.push(snap());if(undoS.length>60)undoS.shift();redoS.le
 function restore(str){
   var d=JSON.parse(str);
   d.nodes.forEach(function(o){var c=map.get(o.id);if(c){o.pom=c.pom;o.poms=c.poms;o.doneOnce=!!(c.doneOnce||o.doneOnce);}});
+  state.nodes.filter(function(n){return typeof n.slot==='number';}).forEach(function(c){if(!d.nodes.some(function(o){return o.id===c.id;}))d.nodes.push(c);});
+  d.links=d.links.filter(function(l){return d.nodes.some(function(o){return o.id===l[0];})&&d.nodes.some(function(o){return o.id===l[1];});});
   state.nodes=d.nodes;state.links=d.links;reindex();
   if(sel&&!map.get(sel)){sel=null;panel.hidden=true;}
   if(connectFrom&&!map.get(connectFrom))endConnect();
@@ -962,7 +1177,7 @@ document.addEventListener('keydown',function(e){
   var k=e.key,mod=e.ctrlKey||e.metaKey,a=document.activeElement,inTitle=!!a&&a.id==='pTitle',field=inField(),bare=bodyish();
   if(mod&&!field&&(k==='z'||k==='Z')){e.preventDefault();if(e.shiftKey)redo();else undo();return;}
   if(mod&&!field&&(k==='y'||k==='Y')){e.preventDefault();redo();return;}
-  if(mod&&k==='Enter'&&sel&&sel!=='root'&&!connectFrom&&(bare||inTitle)){
+  if(mod&&k==='Enter'&&sel&&map.get(sel)&&map.get(sel).parent&&!connectFrom&&(bare||inTitle)){
     e.preventDefault();var dn=map.get(sel);if(dn){setDone(dn);renderPanel();if(inTitle)focusTitle(true);}return;
   }
   if(mod||e.altKey||connectFrom)return;
@@ -974,7 +1189,7 @@ document.addEventListener('keydown',function(e){
   if(!bare)return;
   var n0=map.get(sel);
   switch(k){
-    case 'Delete':case 'Backspace':if(n0&&n0.id!=='root'){e.preventDefault();delNode(n0.id);}break;
+    case 'Delete':case 'Backspace':if(n0&&n0.parent){e.preventDefault();delNode(n0.id);}break;
     case 'ArrowLeft':e.preventDefault();navigate(-1,0);break;
     case 'ArrowRight':e.preventDefault();navigate(1,0);break;
     case 'ArrowUp':e.preventDefault();navigate(0,-1);break;
@@ -992,14 +1207,17 @@ document.addEventListener('keydown',function(e){
 });
 document.addEventListener('keydown',function(e){
   if(e.key!=='Escape')return;
-  if(!dlg.hidden)closeAch();else if(connectFrom)endConnect();else if(sel)select(null);
+  if(!dlg.hidden)closeAch();else if(connectFrom)endConnect();else if(sel||selSlot!==null)select(null);
 });
 
 /* ---------- arranque ---------- */
 state=normalize(loadLocal()||seed());
 reindex();
 state.nodes.forEach(function(n){if(n.pom&&n.pom.endAt&&n.pom.endAt<=Date.now())pomComplete(n,true);});
-updateAchCount();updateSndBtn();setStatus();readTokens();
+updateAchCount();updateSndBtn();updateCoins();setStatus();readTokens();checkAch(true);snapshot('inicio');
+try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().then(function(g){persisted=g;},function(){});}catch(e){}
+if(recovered){writeLocal();setTimeout(function(){toast('Tu mapa principal no se pudo leer. Se recuperó el último punto de restauración.');},600);}
+else if(state.nodes.length>=8&&Date.now()-(state.meta.lastExport||0)>7*864e5)setTimeout(function(){toast('Hace tiempo que no sacas una copia propia. Abre «Respaldo» para descargarla.');},5000);
 new ResizeObserver(function(){resize();}).observe($('#stage'));
 resize();
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){readTokens();if(sel)renderPanel();});
